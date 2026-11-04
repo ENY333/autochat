@@ -37,6 +37,9 @@ class ChatAccessibilityService : AccessibilityService() {
  fun refreshBubble() {
   val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
   val foreground=rootInActiveWindow?.packageName?.toString().orEmpty()
+  // Accessibility overlays can temporarily become the active window.
+  // Do not close the selector while the user is drawing a region.
+  if(bubble.isSelecting) return
   val inTarget=target.isNotBlank() && target==foreground
   if(inTarget) bubble.show() else bubble.close()
   if(previouslyInTarget && !inTarget) stopNow()
