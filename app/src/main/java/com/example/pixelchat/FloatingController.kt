@@ -49,6 +49,8 @@ class FloatingController(
     }
 
     fun show() {
+        val locked=prefs.getString("locked_package","").orEmpty()
+        if(locked.isBlank() || service.rootInActiveWindow?.packageName?.toString()!=locked) return
         if (bubble != null) return
 
         val btn = TextView(service).apply {
@@ -137,6 +139,10 @@ class FloatingController(
         action("Xóa vùng cuối") { deleteLast() }
 
         action("BẬT BOT") {
+            if(service.rootInActiveWindow?.packageName?.toString()!=prefs.getString("locked_package","")) {
+                toast("Chỉ được bật trong app đã chọn")
+                return@action
+            }
             prefs.edit().putBoolean("running", true).apply()
             toast("Đã bật theo dõi")
         }
@@ -162,9 +168,9 @@ class FloatingController(
     private fun select(role: String) {
         val pkg = service.rootInActiveWindow
             ?.packageName?.toString().orEmpty()
-
-        if (pkg.isBlank() || pkg == service.packageName) {
-            toast("Mở ứng dụng chat trước khi chọn vùng")
+        val locked=prefs.getString("locked_package","").orEmpty()
+        if (pkg.isBlank() || pkg!=locked) {
+            toast("Chỉ được chọn vùng trong ứng dụng đã khóa")
             return
         }
 
@@ -222,12 +228,7 @@ class FloatingController(
                                         .put("region", index)
                                 )
 
-                                val allowed = prefs.getString(
-                                    "allowed_packages", ""
-                                ).orEmpty().split(",")
-                                    .map { it.trim() }
-                                    .filter { it.isNotEmpty() }
-                                    .plus(pkg).distinct().joinToString(",")
+                                val allowed = locked
 
                                 prefs.edit()
                                     .putString("slots", slots.toString())
