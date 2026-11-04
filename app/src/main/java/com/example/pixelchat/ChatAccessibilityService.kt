@@ -23,6 +23,8 @@ import java.util.concurrent.Executors
 class ChatAccessibilityService : AccessibilityService() {
  companion object { var instance: ChatAccessibilityService? = null; private set }
  private val main = Handler(Looper.getMainLooper())
+ private val bubble by lazy { FloatingController(this) }
+ private var previouslyInTarget = false
  private val io = Executors.newSingleThreadExecutor()
  private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
  private var scanning = false
@@ -31,20 +33,47 @@ class ChatAccessibilityService : AccessibilityService() {
  private var pendingSlot: JSONObject? = null
  private var pendingAt = 0L
  private val seen = mutableMapOf<String, String>()
- override fun onServiceConnected() { instance = this }
+ override fun onServiceConnected() { super.onServiceConnected(); instance = this; refreshBubble() }
+ fun refreshBubble(event: AccessibilityEvent? = null) {
+  val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
+  val foreground=rootInActiveWindow?.packageName?.toString().orEmpty()
+  val eventPackage=event?.packageName?.toString().orEmpty()
+  val actualChange=event?.eventType==AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+    eventPackage.isNotBlank() && eventPackage!=packageName && eventPackage!=target
+  if(actualChange) {
+   bubble.close()
+   if(previouslyInTarget) stopNow()
+   previouslyInTarget=false
+   return
+  }
+  // Never dismiss the drawing surface on a temporary overlay/window event.
+  if(bubble.isSelecting) return
+  val inTarget=target.isNotBlank() && (foreground==target || eventPackage==target)
+  if(inTarget) {
+   bubble.show()
+   previouslyInTarget=true
+  } else if(target.isBlank()) {
+   bubble.close()
+   previouslyInTarget=false
+  }
+ }
+ private fun allowedForeground():Boolean {
+  val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
+  return target.isNotBlank() && rootInActiveWindow?.packageName?.toString()==target
+ }
  override fun onAccessibilityEvent(event: AccessibilityEvent?) {
   val prefs = getSharedPreferences("config", MODE_PRIVATE)
-  if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
+  refreshBubble(event)
   val pkg = event?.packageName?.toString().orEmpty()
-  if (pkg.isBlank() || pkg == packageName) return
-  val allow = prefs.getString("allowed_packages", "").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
-  if (allow.isEmpty() || pkg !in allow) return
+  val locked = prefs.getString("locked_package","").orEmpty()
+  if(pkg!=locked || !allowedForeground()) return
+  if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
   if (pendingSlot != null && System.currentTimeMillis()-pendingAt>12000) pendingSlot=null
   lastScan = System.currentTimeMillis(); scanning = true
   takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object: TakeScreenshotCallback {
    override fun onSuccess(result: ScreenshotResult) {
     val bmp = try { Bitmap.wrapHardwareBuffer(result.hardwareBuffer,result.colorSpace)?.copy(Bitmap.Config.ARGB_8888,false) } finally { result.hardwareBuffer.close() }
-    if (bmp == null) { scanning=false; return }
+    if (bmp == null || !allowedForeground()) { bmp?.recycle(); scanning=false; return }
     if(pendingSlot!=null && pendingSlot?.optString("pkg")==pkg) analyze(bmp,pkg)
     else if(prefs.getString("slots","[]")!="[]") scanSlots(bmp,pkg)
     else analyze(bmp,pkg)
@@ -135,7 +164,7 @@ class ChatAccessibilityService : AccessibilityService() {
   val contact=(pendingSlot?.optString("name") ?: prefs.getString("contact_$pkg", ""))?.trim().orEmpty()
   // No auto-send unless the contact is explicitly configured for this package.
   if(contact.isBlank()) return
-  if(pendingSlot!=null && prefs.getString("verified_${pkg}","")!=contact) return
+  if(pendingSlot==null || prefs.getString("verified_${pkg}","")!=contact) return
   val key="$pkg|$contact"
   val hash=MessageDigest.getInstance("SHA-256").digest(content.toByteArray()).joinToString("") { "%02x".format(it) }
   if(seen[key]==hash || prefs.getString("seen_$key", "")==hash) return
@@ -161,9 +190,9 @@ class ChatAccessibilityService : AccessibilityService() {
  }
  private fun sendReply(pkg:String,reply:String,token:Int) {
   val prefs=getSharedPreferences("config",MODE_PRIVATE)
-  if(token!=generation || !prefs.getBoolean("running",false) || !prefs.getBoolean("auto_send",false)) return
-  if(rootInActiveWindow?.packageName?.toString()!=pkg) return
-  if(pendingSlot!=null && prefs.getString("verified_${pkg}","")!=pendingSlot?.optString("name")) return
+  if(token!=generation || !prefs.getBoolean("running",false) || !prefs.getBoolean("auto_send",false) || !allowedForeground()) return
+  if(rootInActiveWindow?.packageName?.toString()!=pkg || pkg!=prefs.getString("locked_package","")) return
+  if(pendingSlot==null || prefs.getString("verified_${pkg}","")!=pendingSlot?.optString("name")) return
   val root=rootInActiveWindow ?: return
   val inputs=mutableListOf<AccessibilityNodeInfo>()
   fun walk(n:AccessibilityNodeInfo) { if(n.isEditable && n.isVisibleToUser) inputs.add(n); for(i in 0 until n.childCount) n.getChild(i)?.let { walk(it) } }
@@ -191,5 +220,5 @@ class ChatAccessibilityService : AccessibilityService() {
  }
  fun stopNow() { generation++; scanning=false; pendingSlot=null }
  override fun onInterrupt() { stopNow() }
- override fun onDestroy() { stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
+ override fun onDestroy() { bubble.close(); stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
 }

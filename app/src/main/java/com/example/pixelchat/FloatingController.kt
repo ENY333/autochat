@@ -27,6 +27,8 @@ class FloatingController(
     private var bubble: View? = null
     private var menu: View? = null
     private var selector: View? = null
+    val isSelecting: Boolean get() = selector != null
+    private var sessionPackage: String = ""
 
     private fun dp(n: Int): Int =
         (n * service.resources.displayMetrics.density).toInt()
@@ -49,7 +51,10 @@ class FloatingController(
     }
 
     fun show() {
-        if (bubble != null) return
+        val locked=prefs.getString("locked_package","").orEmpty()
+        if(locked.isBlank() || service.rootInActiveWindow?.packageName?.toString()!=locked) return
+        sessionPackage = locked
+        if (bubble != null || isSelecting) return
 
         val btn = TextView(service).apply {
             text = "AI"
@@ -137,6 +142,10 @@ class FloatingController(
         action("Xóa vùng cuối") { deleteLast() }
 
         action("BẬT BOT") {
+            if(service.rootInActiveWindow?.packageName?.toString()!=prefs.getString("locked_package","")) {
+                toast("Chỉ được bật trong app đã chọn")
+                return@action
+            }
             prefs.edit().putBoolean("running", true).apply()
             toast("Đã bật theo dõi")
         }
@@ -160,11 +169,12 @@ class FloatingController(
     }
 
     private fun select(role: String) {
-        val pkg = service.rootInActiveWindow
-            ?.packageName?.toString().orEmpty()
-
-        if (pkg.isBlank() || pkg == service.packageName) {
-            toast("Mở ứng dụng chat trước khi chọn vùng")
+        // The overlay itself can be the active accessibility window.
+        // Use the app verified when the floating bubble was opened.
+        val pkg = sessionPackage
+        val locked=prefs.getString("locked_package","").orEmpty()
+        if (pkg.isBlank() || pkg!=locked) {
+            toast("Chỉ được chọn vùng trong ứng dụng đã khóa")
             return
         }
 
@@ -174,7 +184,6 @@ class FloatingController(
         val view = RegionOverlay(service) { rect ->
             remove(selector)
             selector = null
-            show()
 
             if (rect == null) {
                 toast("Đã hủy chọn vùng")
@@ -222,12 +231,7 @@ class FloatingController(
                                         .put("region", index)
                                 )
 
-                                val allowed = prefs.getString(
-                                    "allowed_packages", ""
-                                ).orEmpty().split(",")
-                                    .map { it.trim() }
-                                    .filter { it.isNotEmpty() }
-                                    .plus(pkg).distinct().joinToString(",")
+                                val allowed = locked
 
                                 prefs.edit()
                                     .putString("slots", slots.toString())
@@ -241,19 +245,33 @@ class FloatingController(
                         .create()
 
                     dialog.window?.setType(overlayType)
-                    dialog.show()
+                    dialog.setOnDismissListener { show() }
+                    try { dialog.show() } catch (e: Exception) {
+                        toast("Lỗi hộp thoại: " + e.javaClass.simpleName)
+                        show()
+                    }
                 } else {
                     toast("Đã lưu vùng $role")
+                    show()
                 }
             }
+            if(rect == null) show()
         }
 
         val p = params(-1, -1).apply {
-            flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         }
 
-        wm.addView(view, p)
         selector = view
+        try {
+            wm.addView(view, p)
+        } catch (e: Exception) {
+            selector = null
+            toast("Không mở được vùng chọn: " + e.javaClass.simpleName)
+            show()
+        }
     }
 
     private fun deleteLast() {
