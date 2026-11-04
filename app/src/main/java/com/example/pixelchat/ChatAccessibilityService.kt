@@ -48,17 +48,17 @@ class ChatAccessibilityService : AccessibilityService() {
  }
  override fun onAccessibilityEvent(event: AccessibilityEvent?) {
   val prefs = getSharedPreferences("config", MODE_PRIVATE)
-  if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
+  refreshBubble()
   val pkg = event?.packageName?.toString().orEmpty()
-  if (pkg.isBlank() || pkg == packageName) return
-  val allow = prefs.getString("allowed_packages", "").orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
-  if (allow.isEmpty() || pkg !in allow) return
+  val locked = prefs.getString("locked_package","").orEmpty()
+  if(pkg!=locked || !allowedForeground()) return
+  if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
   if (pendingSlot != null && System.currentTimeMillis()-pendingAt>12000) pendingSlot=null
   lastScan = System.currentTimeMillis(); scanning = true
   takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object: TakeScreenshotCallback {
    override fun onSuccess(result: ScreenshotResult) {
     val bmp = try { Bitmap.wrapHardwareBuffer(result.hardwareBuffer,result.colorSpace)?.copy(Bitmap.Config.ARGB_8888,false) } finally { result.hardwareBuffer.close() }
-    if (bmp == null) { scanning=false; return }
+    if (bmp == null || !allowedForeground()) { bmp?.recycle(); scanning=false; return }
     if(pendingSlot!=null && pendingSlot?.optString("pkg")==pkg) analyze(bmp,pkg)
     else if(prefs.getString("slots","[]")!="[]") scanSlots(bmp,pkg)
     else analyze(bmp,pkg)
@@ -175,7 +175,7 @@ class ChatAccessibilityService : AccessibilityService() {
  }
  private fun sendReply(pkg:String,reply:String,token:Int) {
   val prefs=getSharedPreferences("config",MODE_PRIVATE)
-  if(token!=generation || !prefs.getBoolean("running",false) || !prefs.getBoolean("auto_send",false)) return
+  if(token!=generation || !prefs.getBoolean("running",false) || !prefs.getBoolean("auto_send",false) || !allowedForeground()) return
   if(rootInActiveWindow?.packageName?.toString()!=pkg) return
   if(pendingSlot!=null && prefs.getString("verified_${pkg}","")!=pendingSlot?.optString("name")) return
   val root=rootInActiveWindow ?: return
@@ -205,5 +205,5 @@ class ChatAccessibilityService : AccessibilityService() {
  }
  fun stopNow() { generation++; scanning=false; pendingSlot=null }
  override fun onInterrupt() { stopNow() }
- override fun onDestroy() { stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
+ override fun onDestroy() { bubble.close(); stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
 }
