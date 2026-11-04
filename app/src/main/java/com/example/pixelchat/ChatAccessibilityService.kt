@@ -149,7 +149,7 @@ class ChatAccessibilityService : AccessibilityService() {
   val contact=(pendingSlot?.optString("name") ?: prefs.getString("contact_$pkg", ""))?.trim().orEmpty()
   // No auto-send unless the contact is explicitly configured for this package.
   if(contact.isBlank()) return
-  if(pendingSlot!=null && prefs.getString("verified_${pkg}","")!=contact) return
+  if(pendingSlot==null || prefs.getString("verified_${pkg}","")!=contact) return
   val key="$pkg|$contact"
   val hash=MessageDigest.getInstance("SHA-256").digest(content.toByteArray()).joinToString("") { "%02x".format(it) }
   if(seen[key]==hash || prefs.getString("seen_$key", "")==hash) return
@@ -176,8 +176,8 @@ class ChatAccessibilityService : AccessibilityService() {
  private fun sendReply(pkg:String,reply:String,token:Int) {
   val prefs=getSharedPreferences("config",MODE_PRIVATE)
   if(token!=generation || !prefs.getBoolean("running",false) || !prefs.getBoolean("auto_send",false) || !allowedForeground()) return
-  if(rootInActiveWindow?.packageName?.toString()!=pkg) return
-  if(pendingSlot!=null && prefs.getString("verified_${pkg}","")!=pendingSlot?.optString("name")) return
+  if(rootInActiveWindow?.packageName?.toString()!=pkg || pkg!=prefs.getString("locked_package","")) return
+  if(pendingSlot==null || prefs.getString("verified_${pkg}","")!=pendingSlot?.optString("name")) return
   val root=rootInActiveWindow ?: return
   val inputs=mutableListOf<AccessibilityNodeInfo>()
   fun walk(n:AccessibilityNodeInfo) { if(n.isEditable && n.isVisibleToUser) inputs.add(n); for(i in 0 until n.childCount) n.getChild(i)?.let { walk(it) } }
