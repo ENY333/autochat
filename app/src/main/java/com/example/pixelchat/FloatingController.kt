@@ -214,9 +214,13 @@ class FloatingController(
                         setSingleLine()
                     }
 
+                    var chosenType="unknown"
+                    val choices=arrayOf("Nam (được phép trả lời)", "Nữ (bỏ qua)", "Bot / hệ thống (bỏ qua)", "Chưa xác định (bỏ qua)")
+                    val values=arrayOf("male","female","bot","unknown")
                     val dialog = android.app.AlertDialog.Builder(service)
                         .setTitle("Gán vùng cho user")
                         .setView(input)
+                        .setSingleChoiceItems(choices,3) { _, which -> chosenType=values[which] }
                         .setPositiveButton("Lưu") { _, _ ->
                             val name = input.text.toString().trim()
                             if (name.isNotBlank()) {
@@ -229,6 +233,7 @@ class FloatingController(
                                         .put("name", name)
                                         .put("pkg", pkg)
                                         .put("region", index)
+                                        .put("type", chosenType)
                                 )
 
                                 val allowed = locked
