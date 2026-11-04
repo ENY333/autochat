@@ -27,6 +27,7 @@ class FloatingController(
     private var bubble: View? = null
     private var menu: View? = null
     private var selector: View? = null
+    val isSelecting: Boolean get() = selector != null
 
     private fun dp(n: Int): Int =
         (n * service.resources.displayMetrics.density).toInt()
@@ -51,7 +52,7 @@ class FloatingController(
     fun show() {
         val locked=prefs.getString("locked_package","").orEmpty()
         if(locked.isBlank() || service.rootInActiveWindow?.packageName?.toString()!=locked) return
-        if (bubble != null) return
+        if (bubble != null || isSelecting) return
 
         val btn = TextView(service).apply {
             text = "AI"
@@ -250,11 +251,19 @@ class FloatingController(
         }
 
         val p = params(-1, -1).apply {
-            flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
         }
 
-        wm.addView(view, p)
         selector = view
+        try {
+            wm.addView(view, p)
+        } catch (e: Exception) {
+            selector = null
+            toast("Không mở được vùng chọn: " + e.javaClass.simpleName)
+            show()
+        }
     }
 
     private fun deleteLast() {
