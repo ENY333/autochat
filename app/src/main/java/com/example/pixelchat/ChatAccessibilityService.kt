@@ -23,6 +23,8 @@ import java.util.concurrent.Executors
 class ChatAccessibilityService : AccessibilityService() {
  companion object { var instance: ChatAccessibilityService? = null; private set }
  private val main = Handler(Looper.getMainLooper())
+ private val bubble by lazy { FloatingController(this) }
+ private var previouslyInTarget = false
  private val io = Executors.newSingleThreadExecutor()
  private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
  private var scanning = false
@@ -31,7 +33,19 @@ class ChatAccessibilityService : AccessibilityService() {
  private var pendingSlot: JSONObject? = null
  private var pendingAt = 0L
  private val seen = mutableMapOf<String, String>()
- override fun onServiceConnected() { instance = this }
+ override fun onServiceConnected() { super.onServiceConnected(); instance = this; refreshBubble() }
+ fun refreshBubble() {
+  val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
+  val foreground=rootInActiveWindow?.packageName?.toString().orEmpty()
+  val inTarget=target.isNotBlank() && target==foreground
+  if(inTarget) bubble.show() else bubble.close()
+  if(previouslyInTarget && !inTarget) stopNow()
+  previouslyInTarget=inTarget
+ }
+ private fun allowedForeground():Boolean {
+  val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
+  return target.isNotBlank() && rootInActiveWindow?.packageName?.toString()==target
+ }
  override fun onAccessibilityEvent(event: AccessibilityEvent?) {
   val prefs = getSharedPreferences("config", MODE_PRIVATE)
   if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
