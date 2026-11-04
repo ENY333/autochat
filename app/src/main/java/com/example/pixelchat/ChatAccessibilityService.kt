@@ -30,10 +30,29 @@ class ChatAccessibilityService : AccessibilityService() {
  private var scanning = false
  private var generation = 0
  private var lastScan = 0L
+ private val polling = object: Runnable {
+  override fun run() {
+   try {
+    val prefs=getSharedPreferences("config",MODE_PRIVATE)
+    if(prefs.getBoolean("running",false) && allowedForeground() && !bubble.isSelecting && !scanning) {
+     onAccessibilityEvent(AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply {
+      packageName=prefs.getString("locked_package","")
+     })
+    }
+   } finally { main.postDelayed(this, 3500L) }
+  }
+ }
+ private var navigationBusy=false
+ private var lastEnteredAt=0L
  private var pendingSlot: JSONObject? = null
  private var pendingAt = 0L
  private val seen = mutableMapOf<String, String>()
- override fun onServiceConnected() { super.onServiceConnected(); instance = this; refreshBubble() }
+ override fun onServiceConnected() {
+  super.onServiceConnected()
+  instance=this
+  refreshBubble()
+  main.post(polling)
+ }
  fun refreshBubble(event: AccessibilityEvent? = null) {
   val target=getSharedPreferences("config",MODE_PRIVATE).getString("locked_package","").orEmpty()
   val foreground=rootInActiveWindow?.packageName?.toString().orEmpty()
@@ -66,9 +85,13 @@ class ChatAccessibilityService : AccessibilityService() {
   refreshBubble(event)
   val pkg = event?.packageName?.toString().orEmpty()
   val locked = prefs.getString("locked_package","").orEmpty()
-  if(pkg!=locked || !allowedForeground()) return
+  if(pkg!=locked || !allowedForeground() || bubble.isSelecting) return
   if (!prefs.getBoolean("running",false) || scanning || System.currentTimeMillis()-lastScan < 2500) return
-  if (pendingSlot != null && System.currentTimeMillis()-pendingAt>12000) pendingSlot=null
+  if (pendingSlot != null && System.currentTimeMillis()-pendingAt>12000) {
+   pendingSlot=null
+   navigationBusy=false
+   prefs.edit().remove("verified_$pkg").apply()
+  }
   lastScan = System.currentTimeMillis(); scanning = true
   takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object: TakeScreenshotCallback {
    override fun onSuccess(result: ScreenshotResult) {
@@ -103,6 +126,7 @@ class ChatAccessibilityService : AccessibilityService() {
   val regions=try { JSONArray(prefs.getString("regions","[]")) } catch (_:Exception) { JSONArray() }
   val candidates=(0 until slots.length()).mapNotNull { slots.optJSONObject(it) }
    .filter { it.optString("pkg")==pkg && it.optInt("region",-1) in 0 until regions.length() }
+   .filter { it.optString("type","unknown")=="male" }
   if(candidates.isEmpty()) { scanning=false; return }
   var left=candidates.size
   candidates.forEach { slot ->
@@ -113,13 +137,19 @@ class ChatAccessibilityService : AccessibilityService() {
    recognizer.process(InputImage.fromBitmap(crop,0)).addOnSuccessListener { result ->
     val name=slot.optString("name").trim()
     // Only enter a slot if its configured name is visible in its own rectangle.
-    if(pendingSlot==null && name.isNotEmpty() && result.text.contains(name,ignoreCase=true)) {
+    if(pendingSlot==null && !navigationBusy && allowedForeground() && name.isNotEmpty() && result.text.contains(name,ignoreCase=true)) {
+     navigationBusy=true
      pendingSlot=slot; pendingAt=System.currentTimeMillis()
      prefs.edit().remove("verified_${pkg}").apply()
      val x=rect.centerX().toFloat(); val y=rect.centerY().toFloat()
      val path=Path().apply { moveTo(x,y) }
      val gesture=GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path,0,90)).build()
-     dispatchGesture(gesture,null,null)
+     dispatchGesture(gesture,object:GestureResultCallback() {
+      override fun onCancelled(gestureDescription:GestureDescription?) {
+       navigationBusy=false
+       pendingSlot=null
+      }
+     },null)
     }
    }.addOnCompleteListener { crop.recycle(); if(--left==0) scanning=false }
   }
@@ -137,6 +167,15 @@ class ChatAccessibilityService : AccessibilityService() {
   if(selected.isEmpty()) { scanning=false; return }
   val slot=pendingSlot
   if(slot!=null) {
+   if(slot.optString("type","unknown")!="male") {
+    pendingSlot=null; navigationBusy=false; scanning=false; return
+   }
+   if(System.currentTimeMillis()-lastEnteredAt>3000L) {
+    lastEnteredAt=System.currentTimeMillis()
+    scrollToLatest()
+    scanning=false
+    return
+   }
    // Verify chat header before OCR message processing; never trust list coordinates alone.
    val contactRegion=(0 until regions.length()).mapNotNull { regions.optJSONObject(it) }.firstOrNull { it.optString("role")=="contact" }
    val rect=contactRegion?.let { regionRect(it,bmp) }
@@ -145,7 +184,7 @@ class ChatAccessibilityService : AccessibilityService() {
    recognizer.process(InputImage.fromBitmap(crop,0)).addOnSuccessListener { result ->
     if(result.text.contains(slot.optString("name"),ignoreCase=true)) {
      val key="verified_${pkg}"; prefs.edit().putString(key,slot.optString("name")).apply()
-    } else { pendingSlot=null; prefs.edit().remove("verified_${pkg}").apply() }
+    } else { pendingSlot=null; navigationBusy=false; prefs.edit().remove("verified_${pkg}").apply() }
    }.addOnCompleteListener { crop.recycle(); scanning=false }
    // Message extraction continues only after verification on a later event.
    if(prefs.getString("verified_${pkg}","")!=slot.optString("name")) return
@@ -164,7 +203,8 @@ class ChatAccessibilityService : AccessibilityService() {
   val contact=(pendingSlot?.optString("name") ?: prefs.getString("contact_$pkg", ""))?.trim().orEmpty()
   // No auto-send unless the contact is explicitly configured for this package.
   if(contact.isBlank()) return
-  if(pendingSlot==null || prefs.getString("verified_${pkg}","")!=contact) return
+  if(pendingSlot==null || pendingSlot?.optString("type","unknown")!="male" || prefs.getString("verified_${pkg}","")!=contact) return
+  if(!latestMessageIsIncoming()) return
   val key="$pkg|$contact"
   val hash=MessageDigest.getInstance("SHA-256").digest(content.toByteArray()).joinToString("") { "%02x".format(it) }
   if(seen[key]==hash || prefs.getString("seen_$key", "")==hash) return
@@ -211,6 +251,7 @@ class ChatAccessibilityService : AccessibilityService() {
     if(pendingSlot!=null) main.postDelayed({
      if(token==generation && prefs.getBoolean("running",false)) {
       pendingSlot=null
+      navigationBusy=false
       prefs.edit().remove("verified_${pkg}").apply()
       performGlobalAction(GLOBAL_ACTION_BACK)
      }
@@ -218,7 +259,28 @@ class ChatAccessibilityService : AccessibilityService() {
    }
   }
  }
- fun stopNow() { generation++; scanning=false; pendingSlot=null }
+ private fun scrollToLatest() {
+  if(!allowedForeground()) return
+  val root=rootInActiveWindow ?: return
+  val scrollables=mutableListOf<AccessibilityNodeInfo>()
+  fun walk(node:AccessibilityNodeInfo) {
+   if(node.isScrollable && node.isVisibleToUser) scrollables.add(node)
+   for(i in 0 until node.childCount) node.getChild(i)?.let { walk(it) }
+  }
+  walk(root)
+  if(scrollables.size==1) scrollables[0].performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+ }
+ private fun latestMessageIsIncoming():Boolean {
+  // Fail closed: the app's accessibility hierarchy must expose a stable sender marker.
+  // OCR text alone cannot establish who authored the newest message.
+  val root=rootInActiveWindow ?: return false
+  val marker=getSharedPreferences("config",MODE_PRIVATE)
+    .getString("incoming_marker_id","").orEmpty()
+  if(marker.isBlank()) return false
+  return root.findAccessibilityNodeInfosByViewId(marker).count { it.isVisibleToUser }==1
+ }
+ fun stopNow() { generation++; scanning=false; pendingSlot=null; navigationBusy=false }
+
  override fun onInterrupt() { stopNow() }
- override fun onDestroy() { bubble.close(); stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
+ override fun onDestroy() { main.removeCallbacks(polling); bubble.close(); stopNow(); instance=null; recognizer.close(); io.shutdownNow(); super.onDestroy() }
 }
