@@ -28,6 +28,7 @@ class FloatingController(
     private var menu: View? = null
     private var selector: View? = null
     val isSelecting: Boolean get() = selector != null
+    private var sessionPackage: String = ""
 
     private fun dp(n: Int): Int =
         (n * service.resources.displayMetrics.density).toInt()
@@ -52,6 +53,7 @@ class FloatingController(
     fun show() {
         val locked=prefs.getString("locked_package","").orEmpty()
         if(locked.isBlank() || service.rootInActiveWindow?.packageName?.toString()!=locked) return
+        sessionPackage = locked
         if (bubble != null || isSelecting) return
 
         val btn = TextView(service).apply {
@@ -167,8 +169,9 @@ class FloatingController(
     }
 
     private fun select(role: String) {
-        val pkg = service.rootInActiveWindow
-            ?.packageName?.toString().orEmpty()
+        // The overlay itself can be the active accessibility window.
+        // Use the app verified when the floating bubble was opened.
+        val pkg = sessionPackage
         val locked=prefs.getString("locked_package","").orEmpty()
         if (pkg.isBlank() || pkg!=locked) {
             toast("Chỉ được chọn vùng trong ứng dụng đã khóa")
@@ -181,7 +184,6 @@ class FloatingController(
         val view = RegionOverlay(service) { rect ->
             remove(selector)
             selector = null
-            show()
 
             if (rect == null) {
                 toast("Đã hủy chọn vùng")
@@ -243,11 +245,17 @@ class FloatingController(
                         .create()
 
                     dialog.window?.setType(overlayType)
-                    dialog.show()
+                    dialog.setOnDismissListener { show() }
+                    try { dialog.show() } catch (e: Exception) {
+                        toast("Lỗi hộp thoại: " + e.javaClass.simpleName)
+                        show()
+                    }
                 } else {
                     toast("Đã lưu vùng $role")
+                    show()
                 }
             }
+            if(rect == null) show()
         }
 
         val p = params(-1, -1).apply {
